@@ -109,7 +109,7 @@ module.exports = {
 
     const token = jwt.sign(
       { userId: user._id.toString(), email: user.email },
-      process.env.JWT_SERCET,
+      process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
 
@@ -255,20 +255,17 @@ module.exports = {
   },
 
   addComment: async function ({ commentInput }, context) {
-  // 1️⃣ Authentication check
+   
   if (!context?.isAuth) throw new Error('Not authenticated!');
   if (!commentInput.content || !commentInput.content.trim())
     throw new Error('Comment cannot be empty!');
 
-  // 2️⃣ Find the post
   const post = await Post.findById(commentInput.postId);
   if (!post) throw new Error('Post not found!');
 
-  // 3️⃣ Find the user
   const user = await User.findById(context.userId);
   if (!user) throw new Error('User not found!');
 
-  // 4️⃣ Create the comment
   const comment = new Comment({
     content: commentInput.content.trim(),
     post: commentInput.postId,
@@ -276,22 +273,17 @@ module.exports = {
     parentId: commentInput.parentId || null
   });
 
-  // 5️⃣ Save comment
   await comment.save();
-
-  // 6️⃣ Populate creator with specific fields
   await comment.populate({
     path: "creator",
     select: "name username email avatar role status"
   });
 
-  // 7️⃣ Safety fallback: ensure name is not null
   if (!comment.creator || !comment.creator.name) {
     comment.creator = comment.creator || {};
     comment.creator.name = "Unknown User";
   }
 
-  // 8️⃣ Return the comment for GraphQL
   return {
     ...comment._doc,
     _id: comment._id.toString(),
