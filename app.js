@@ -31,12 +31,24 @@ app.use(multer({ storage: fileStorage, fileFilter }).single('image'));
 app.use('/images', express.static(path.join(__dirname, 'images')));
 
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*'); 
-  res.setHeader('Access-Control-Allow-Methods', 'OPTIONS, GET, POST, PUT, PATCH, DELETE'); 
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization'); 
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  res.setHeader(
+    'Access-Control-Allow-Origin',
+    process.env.FRONTEND_URL
+  );
+  res.setHeader(
+    'Access-Control-Allow-Methods',
+    'OPTIONS, GET, POST, PUT, PATCH, DELETE'
+  );
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization'
+  );
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
   next();
 });
+
 
 app.put('/post-image', auth, (req, res, next) => {
   if (!req.isAuth) return res.status(401).json({ message: 'Not authenticated!' });
@@ -55,7 +67,7 @@ app.use(
   graphqlHttp((req) => ({
     schema: graphqlSchema,
     rootValue: graphqlResolver,
-    graphiql: true,
+    graphiql: process.env.NODE_ENV !== 'production',
     context: { isAuth: req.isAuth, userId: req.userId },
     formatError(err) {
       if (!err.originalError) return err;

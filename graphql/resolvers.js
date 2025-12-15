@@ -109,7 +109,7 @@ module.exports = {
 
     const token = jwt.sign(
       { userId: user._id.toString(), email: user.email },
-      'somesupersecretsecret',
+      process.env.JWT_SERCET,
       { expiresIn: '1h' }
     );
 
