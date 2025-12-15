@@ -79,6 +79,6 @@ mongoose
   .connect(Mongo_URI)
   .then(() => {
     console.log('MongoDB connected');
-    app.listen(process.env.PORT, () => console.log('Server running on port 8080'));
+    app.listen(process.env.PORT || 8080, () => console.log('Server running on port 8080'));
   })
   .catch(err => console.error(err));
