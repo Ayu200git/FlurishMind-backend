@@ -32,7 +32,22 @@ async function getRepliesRecursive(parentId) {
         avatar: r.creator.avatar || ''
       },
       parentId: r.parentId ? r.parentId.toString() : null,
-      replies: await getRepliesRecursive(r._id),
+      replies: await Promise.all(replies.map(async r => ({
+        ...r._doc,
+        _id: r._id.toString(),
+        createdAt: r.createdAt.toISOString(),
+        creator: {
+          _id: r.creator._id.toString(),
+          name: r.creator.name,
+          email: r.creator.email,
+          avatar: r.creator.avatar
+        },
+        parentId: r.parentId ? r.parentId.toString() : null,
+        likesCount: r.likes ? r.likes.length : 0,
+        likes: [],
+        replies: [],
+        repliesCount: (await Comment.countDocuments({ parentId: r._id }))
+      }))),
       repliesCount: (await Comment.countDocuments({ parentId: r._id }))
     };
   }));
@@ -494,7 +509,9 @@ module.exports = {
       likes: [],
       likesCount: 0,
       replies: [],
-      repliesCount: 0
+      repliesCount: 0,
+      createdAt: comment.createdAt.toISOString(),
+      updatedAt: comment.updatedAt.toISOString()
     };
   },
 
@@ -510,12 +527,17 @@ module.exports = {
 
     comment.content = content.trim();
     await comment.save();
-    await comment.populate('creator', 'name _id email avatar');
+    // Ensure we populate likes so we can return valid User objects if needed.
+    // Although frontend might only ask for _id, it's safer to have real data to avoid schema conflicts.
+    // Ensure we populate likes fully or correctly map them
+    await comment.populate('likes');
 
     return {
+      ...comment._doc,
       _id: comment._id.toString(),
       content: comment.content,
       createdAt: comment.createdAt.toISOString(),
+      updatedAt: (comment.updatedAt || comment.createdAt).toISOString(),
       creator: {
         _id: comment.creator._id.toString(),
         name: comment.creator.name,
@@ -523,7 +545,17 @@ module.exports = {
         avatar: comment.creator.avatar || ''
       },
       parentId: comment.parentId ? comment.parentId.toString() : null,
-      replies: []
+      likes: (comment.likes || []).filter(l => l).map(l => ({
+        ...l._doc,
+        _id: l._id.toString(),
+        name: l.name || 'Unknown',
+        email: l.email || '',
+        status: l.status || 'active',
+        role: l.role || 'user'
+      })),
+      likesCount: comment.likes ? comment.likes.length : 0,
+      replies: (comment.replies || []).map(r => ({ _id: r._id ? r._id.toString() : r.toString() })),
+      repliesCount: comment.replies ? comment.replies.length : 0
     };
   },
 
@@ -532,6 +564,26 @@ module.exports = {
     const comment = await Comment.findById(commentId).populate('creator', 'name _id');
     if (!comment) throw new Error('Comment not found!');
     if (comment.creator._id.toString() !== context.userId.toString()) throw new Error('Not authorized!');
+
+    // Helper to recursively finding all descendant IDs
+    const getAllDescendantIds = async (parentId) => {
+      const children = await Comment.find({ parentId });
+      let ids = children.map(c => c._id);
+      for (const child of children) {
+        const descendantIds = await getAllDescendantIds(child._id);
+        ids = [...ids, ...descendantIds];
+      }
+      return ids;
+    };
+
+    const descendantIds = await getAllDescendantIds(commentId);
+
+    // Delete all descendants first
+    if (descendantIds.length > 0) {
+      await Comment.deleteMany({ _id: { $in: descendantIds } });
+    }
+
+    // Delete the target comment
     await Comment.findByIdAndDelete(commentId);
     return true;
   },
@@ -592,10 +644,11 @@ module.exports = {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate('creator', 'name email avatar');
+      .populate('creator', 'name email avatar')
+      .populate('likes', 'name _id');
 
     return {
-      replies: replies.map(r => ({
+      replies: await Promise.all(replies.map(async r => ({
         ...r._doc,
         _id: r._id.toString(),
         createdAt: r.createdAt.toISOString(),
@@ -607,10 +660,10 @@ module.exports = {
         },
         parentId: r.parentId ? r.parentId.toString() : null,
         likesCount: r.likes ? r.likes.length : 0,
-        likes: [], // We didn't populate likes in paginatedReplies find(), or did we? Line 433 yes we did.
+        likes: [],
         replies: [],
         repliesCount: (await Comment.countDocuments({ parentId: r._id }))
-      })),
+      }))),
       totalReplies,
       hasMore: skip + limit < totalReplies
     };
