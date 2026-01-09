@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config(); // Trigger Restart 1
 const path = require('path');
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -9,6 +9,19 @@ const graphqlHttp = require('express-graphql');
 
 const graphqlSchema = require('./graphql/schema');
 const graphqlResolver = require('./graphql/resolvers');
+
+// DEBUG: Inspect schema
+try {
+  const commentType = graphqlSchema.getType('Comment');
+  if (commentType) {
+    console.log('DEBUG: Comment fields:', Object.keys(commentType.getFields()));
+  } else {
+    console.log('DEBUG: Comment type not found in schema');
+  }
+} catch (e) {
+  console.log('DEBUG: Error inspecting schema', e);
+}
+
 const auth = require('./middleware/auth');
 const { clearImage } = require('./util/file');
 

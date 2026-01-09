@@ -22,7 +22,11 @@ module.exports = buildSchema(`
         creator: User!
         post: Post!
         createdAt: String!
+        updatedAt: String!
+        likes: [User!]!
+        likesCount: Int!
         replies: [Comment!]!
+        repliesCount: Int!
     }
 
     type PaginatedComments {
@@ -120,7 +124,9 @@ module.exports = buildSchema(`
         deleteComment(commentId: ID!): Boolean
         deleteUser(userId: ID!): Boolean
         makeAdmin(userId: ID!): User!
-        addReply(postId: ID!, commentId: ID!, content: String!): Reply
+        addReply(postId: ID!, commentId: ID!, content: String!): Comment!
+        likeComment(commentId: ID!): Comment!
+        unlikeComment(commentId: ID!): Comment!
     }
 
     schema {

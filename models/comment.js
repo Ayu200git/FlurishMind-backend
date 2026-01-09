@@ -17,12 +17,16 @@ const commentSchema = new Schema(
       ref: 'User',
       required: true
     },
-     
+
     parentId: {
       type: Schema.Types.ObjectId,
       ref: 'Comment',
       default: null
-    }
+    },
+    likes: [{
+      type: Schema.Types.ObjectId,
+      ref: 'User'
+    }]
   },
   { timestamps: true }
 );
