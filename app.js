@@ -5,7 +5,7 @@ const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
 const multer = require('multer');
 const graphqlHttp = require('express-graphql');
- 
+
 
 const graphqlSchema = require('./graphql/schema');
 const graphqlResolver = require('./graphql/resolvers');
@@ -22,7 +22,7 @@ const fileStorage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  if (['image/png','image/jpg','image/jpeg'].includes(file.mimetype)) cb(null, true);
+  if (['image/png', 'image/jpg', 'image/jpeg'].includes(file.mimetype)) cb(null, true);
   else cb(null, false);
 };
 
@@ -49,18 +49,25 @@ app.use((req, res, next) => {
   next();
 });
 
+// DEBUG: Log all incoming GraphQL requests
+app.use('/graphql', (req, res, next) => {
+  console.log('Incoming GraphQL Query:', JSON.stringify(req.body.query));
+  console.log('Variables:', req.body.variables);
+  next();
+});
+
 
 app.put('/post-image', auth, (req, res, next) => {
   if (!req.isAuth) return res.status(401).json({ message: 'Not authenticated!' });
   if (!req.file) return res.status(200).json({ message: 'No file provided!' });
   if (req.body.oldPath) clearImage(req.body.oldPath);
   const filePath = req.file.path.replace(/\\/g, '/');
-  const relativePath = filePath.includes('images') 
+  const relativePath = filePath.includes('images')
     ? filePath.substring(filePath.indexOf('images'))
     : 'images/' + req.file.filename;
   res.status(201).json({ message: 'File stored.', filePath: relativePath });
 });
- 
+
 app.use(
   '/graphql',
   auth,

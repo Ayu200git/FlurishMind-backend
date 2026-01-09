@@ -21,11 +21,11 @@ async function getRepliesRecursive(parentId) {
       ...r._doc,
       _id: r._id.toString(),
       createdAt: r.createdAt.toISOString(),
-      creator: { 
-        _id: r.creator._id.toString(), 
-        name: r.creator.name, 
-        email: r.creator.email, 
-        avatar: r.creator.avatar || '' 
+      creator: {
+        _id: r.creator._id.toString(),
+        name: r.creator.name,
+        email: r.creator.email,
+        avatar: r.creator.avatar || ''
       },
       parentId: r.parentId ? r.parentId.toString() : null,
       replies: await getRepliesRecursive(r._id)
@@ -47,11 +47,11 @@ async function getNestedComments(postId) {
       ...c._doc,
       _id: c._id.toString(),
       createdAt: c.createdAt.toISOString(),
-      creator: { 
-        _id: c.creator._id.toString(), 
-        name: c.creator.name, 
-        email: c.creator.email, 
-        avatar: c.creator.avatar || '' 
+      creator: {
+        _id: c.creator._id.toString(),
+        name: c.creator.name,
+        email: c.creator.email,
+        avatar: c.creator.avatar || ''
       },
       parentId: null,
       replies: await getRepliesRecursive(c._id)
@@ -132,7 +132,7 @@ module.exports = {
     return { ...user._doc, _id: user._id.toString() };
   },
 
-  updateUser: async function({ userInput }, context) {
+  updateUser: async function ({ userInput }, context) {
     if (!context || !context.isAuth) throw new Error('Not authenticated!');
     const user = await User.findById(context.userId);
     if (!user) throw new Error('User not found!');
@@ -147,7 +147,7 @@ module.exports = {
     return { ...user._doc, _id: user._id.toString() };
   },
 
-  users: async function(args, context) {
+  users: async function (args, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
     const currentUser = await User.findById(context.userId);
     if (!currentUser || currentUser.role !== 'admin') throw new Error('Not authorized! Admin access required.');
@@ -155,7 +155,7 @@ module.exports = {
     return users.map(u => ({ ...u._doc, _id: u._id.toString() }));
   },
 
-  userById: async function({ userId }, context) {
+  userById: async function ({ userId }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
     const user = await User.findById(userId).select('-password');
     if (!user) throw new Error('User not found!');
@@ -201,9 +201,79 @@ module.exports = {
     };
   },
 
-  posts: async function ({ page = 1 }, context) {
+  updatePost: async function ({ id, postInput }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
-    const perPage = 2;
+    const post = await Post.findById(id).populate('creator');
+    if (!post) throw new Error('No post found!');
+
+    // Safety check for orphaned posts
+    if (!post.creator) {
+      // If creator is missing but the current user matches the stored ID (without populate), we could check that?
+      // But safer to just fail or assume admin? Let's just fail safely.
+      throw new Error('Post creator not found (Data integrity error).');
+    }
+
+    if (post.creator._id.toString() !== context.userId.toString()) {
+      throw new Error('Not authorized!');
+    }
+    const errors = [];
+    if (!postInput.title || !validator.isLength(postInput.title, { min: 5 })) errors.push({ message: 'Title is invalid.' });
+    if (!postInput.content || !validator.isLength(postInput.content, { min: 5 })) errors.push({ message: 'Content is invalid.' });
+    if (errors.length > 0) {
+      const err = new Error('Invalid input.');
+      err.data = errors;
+      err.code = 422;
+      throw err;
+    }
+    post.title = postInput.title;
+    post.content = postInput.content;
+
+    if (postInput.imageUrl !== 'undefined' && postInput.imageUrl !== post.imageUrl) {
+      // Only clear local files, not remote URLs (case insensitive check)
+      if (post.imageUrl && !/^https?:\/\//i.test(post.imageUrl)) {
+        try {
+          clearImage(post.imageUrl);
+        } catch (e) { console.error("Error clearing image:", e); }
+      }
+      post.imageUrl = postInput.imageUrl;
+    }
+    const updatedPost = await post.save();
+    return {
+      ...updatedPost._doc,
+      _id: updatedPost._id.toString(),
+      createdAt: updatedPost.createdAt.toISOString(),
+      updatedAt: updatedPost.updatedAt.toISOString(),
+      likesCount: updatedPost.likes ? updatedPost.likes.length : 0,
+      commentsCount: await Comment.countDocuments({ post: id, parentId: null }),
+      comments: []
+    };
+  },
+
+  deletePost: async function ({ id }, context) {
+    console.log('Attempting to delete post:', id); // DEBUG LOG
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    const post = await Post.findById(id);
+    if (!post) throw new Error('No post found!');
+    if (post.creator.toString() !== context.userId.toString()) {
+      throw new Error('Not authorized!');
+    }
+    if (post.imageUrl && !/^https?:\/\//i.test(post.imageUrl)) {
+      try {
+        clearImage(post.imageUrl);
+      } catch (e) { console.error("Error clearing image:", e); }
+    }
+    await Post.findByIdAndDelete(id);
+    console.log('Post deleted from DB'); // DEBUG LOG
+    const user = await User.findById(context.userId);
+    user.posts.pull(id);
+    await user.save();
+    console.log('User post reference removed'); // DEBUG LOG
+    return true;
+  },
+
+  posts: async function ({ page = 1, limit = 5 }, context) {
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    const perPage = limit;
     const totalPosts = await Post.countDocuments();
 
     const posts = await Post.find()
@@ -215,19 +285,20 @@ module.exports = {
 
     const postsWithComments = await Promise.all(
       posts.map(async (p) => {
-        const comments = await getNestedComments(p._id);
-        return { post: p, comments };
+        // We only fetch the count here.
+        const count = await Comment.countDocuments({ post: p._id, parentId: null });
+        return { post: p, comments: [], commentsCount: count };
       })
     );
 
     return {
-      posts: postsWithComments.map(({ post, comments }) => ({
+      posts: postsWithComments.map(({ post, comments, commentsCount }) => ({
         ...post._doc,
         _id: post._id.toString(),
         createdAt: post.createdAt.toISOString(),
         updatedAt: post.updatedAt.toISOString(),
         likesCount: post.likes ? post.likes.length : 0,
-        commentsCount: comments.length,
+        commentsCount: commentsCount,
         comments
       })),
       totalPosts
@@ -255,54 +326,54 @@ module.exports = {
   },
 
   addComment: async function ({ commentInput }, context) {
-   
-  if (!context?.isAuth) throw new Error('Not authenticated!');
-  if (!commentInput.content || !commentInput.content.trim())
-    throw new Error('Comment cannot be empty!');
 
-  const post = await Post.findById(commentInput.postId);
-  if (!post) throw new Error('Post not found!');
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    if (!commentInput.content || !commentInput.content.trim())
+      throw new Error('Comment cannot be empty!');
 
-  const user = await User.findById(context.userId);
-  if (!user) throw new Error('User not found!');
+    const post = await Post.findById(commentInput.postId);
+    if (!post) throw new Error('Post not found!');
 
-  const comment = new Comment({
-    content: commentInput.content.trim(),
-    post: commentInput.postId,
-    creator: user._id,
-    parentId: commentInput.parentId || null
-  });
+    const user = await User.findById(context.userId);
+    if (!user) throw new Error('User not found!');
 
-  await comment.save();
-  await comment.populate({
-    path: "creator",
-    select: "name username email avatar role status"
-  });
+    const comment = new Comment({
+      content: commentInput.content.trim(),
+      post: commentInput.postId,
+      creator: user._id,
+      parentId: commentInput.parentId || null
+    });
 
-  if (!comment.creator || !comment.creator.name) {
-    comment.creator = comment.creator || {};
-    comment.creator.name = "Unknown User";
-  }
+    await comment.save();
+    await comment.populate({
+      path: "creator",
+      select: "name username email avatar role status"
+    });
 
-  return {
-    ...comment._doc,
-    _id: comment._id.toString(),
-    creator: {
-      _id: comment.creator._id?.toString() || null,
-      name: comment.creator.name,
-      username: comment.creator.username || "",
-      email: comment.creator.email || "",
-      avatar: comment.creator.avatar || "",
-      role: comment.creator.role || "user",
-      status: comment.creator.status || ""
-    },
-    replies: []
-  };
-},
+    if (!comment.creator || !comment.creator.name) {
+      comment.creator = comment.creator || {};
+      comment.creator.name = "Unknown User";
+    }
+
+    return {
+      ...comment._doc,
+      _id: comment._id.toString(),
+      creator: {
+        _id: comment.creator._id?.toString() || null,
+        name: comment.creator.name,
+        username: comment.creator.username || "",
+        email: comment.creator.email || "",
+        avatar: comment.creator.avatar || "",
+        role: comment.creator.role || "user",
+        status: comment.creator.status || ""
+      },
+      replies: []
+    };
+  },
 
 
 
-  updateComment: async function({ commentId, content }, context) {
+  updateComment: async function ({ commentId, content }, context) {
     if (!context || !context.isAuth) throw new Error('Not authenticated!');
     if (!content || content.trim().length === 0) throw new Error('Comment cannot be empty!');
 
@@ -318,9 +389,9 @@ module.exports = {
       _id: comment._id.toString(),
       content: comment.content,
       createdAt: comment.createdAt.toISOString(),
-      creator: { 
-        _id: comment.creator._id.toString(), 
-        name: comment.creator.name, 
+      creator: {
+        _id: comment.creator._id.toString(),
+        name: comment.creator.name,
         email: comment.creator.email,
         avatar: comment.creator.avatar || ''
       },
@@ -351,7 +422,7 @@ module.exports = {
   paginatedComments: async function ({ postId, page = 1, limit = 5 }, context) {
     if (!context?.isAuth) throw new Error("Not authenticated!");
     const skip = (page - 1) * limit;
-    
+
     const totalComments = await Comment.countDocuments({ post: postId, parentId: null });
     const topComments = await Comment.find({ post: postId, parentId: null })
       .sort({ createdAt: -1 })
@@ -363,11 +434,11 @@ module.exports = {
       ...c._doc,
       _id: c._id.toString(),
       createdAt: c.createdAt.toISOString(),
-      creator: { 
-        _id: c.creator._id.toString(), 
-        name: c.creator.name, 
+      creator: {
+        _id: c.creator._id.toString(),
+        name: c.creator.name,
         email: c.creator.email,
-        avatar: c.creator.avatar 
+        avatar: c.creator.avatar
       },
       parentId: null,
       replies: await getRepliesRecursive(c._id)
@@ -383,7 +454,7 @@ module.exports = {
   paginatedReplies: async function ({ commentId, page = 1, limit = 5 }, context) {
     if (!context?.isAuth) throw new Error("Not authenticated!");
     const skip = (page - 1) * limit;
-    
+
     const totalReplies = await Comment.countDocuments({ parentId: commentId });
     const replies = await Comment.find({ parentId: commentId })
       .sort({ createdAt: -1 })
@@ -396,11 +467,11 @@ module.exports = {
         ...r._doc,
         _id: r._id.toString(),
         createdAt: r.createdAt.toISOString(),
-        creator: { 
-          _id: r.creator._id.toString(), 
-          name: r.creator.name, 
+        creator: {
+          _id: r.creator._id.toString(),
+          name: r.creator.name,
           email: r.creator.email,
-          avatar: r.creator.avatar 
+          avatar: r.creator.avatar
         },
         parentId: r.parentId ? r.parentId.toString() : null
       })),
