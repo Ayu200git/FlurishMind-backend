@@ -527,9 +527,6 @@ module.exports = {
 
     comment.content = content.trim();
     await comment.save();
-    // Ensure we populate likes so we can return valid User objects if needed.
-    // Although frontend might only ask for _id, it's safer to have real data to avoid schema conflicts.
-    // Ensure we populate likes fully or correctly map them
     await comment.populate('likes');
 
     return {
@@ -545,14 +542,27 @@ module.exports = {
         avatar: comment.creator.avatar || ''
       },
       parentId: comment.parentId ? comment.parentId.toString() : null,
-      likes: (comment.likes || []).filter(l => l).map(l => ({
-        ...l._doc,
-        _id: l._id.toString(),
-        name: l.name || 'Unknown',
-        email: l.email || '',
-        status: l.status || 'active',
-        role: l.role || 'user'
-      })),
+      likes: (comment.likes || []).map(l => {
+        if (l && l._id) {
+          // Fully populated user object
+          return {
+            ...l._doc,
+            _id: l._id.toString(),
+            name: l.name || 'Unknown',
+            email: l.email || '',
+            status: l.status || 'active',
+            role: l.role || 'user'
+          };
+        }
+        // Fallback for unpopulated ID or partial object
+        return {
+          _id: l ? l.toString() : 'unknown',
+          name: 'Unknown',
+          email: '',
+          status: 'active',
+          role: 'user'
+        };
+      }),
       likesCount: comment.likes ? comment.likes.length : 0,
       replies: (comment.replies || []).map(r => ({ _id: r._id ? r._id.toString() : r.toString() })),
       repliesCount: comment.replies ? comment.replies.length : 0
