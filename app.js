@@ -6,7 +6,6 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const graphqlHttp = require('express-graphql');
 
-// SAFETY: Catch global errors to prevent immediate crash without logs
 process.on('uncaughtException', (err) => {
   console.error('CRITICAL: Uncaught Exception:', err);
 });
@@ -66,10 +65,8 @@ app.use((req, res, next) => {
   }
   next();
 });
-
-// DEBUG: Log all incoming GraphQL requests
-app.use('/graphql', (req, res, next) => {
-  // Only log if body is present (sometimes empty on OPTIONS)
+ 
+app.use('/graphql', (req, res, next)=>{
   if (req.body && req.body.query) {
     console.log('Incoming GraphQL Query:', JSON.stringify(req.body.query).substring(0, 200)); // Truncate for sanity
   }
