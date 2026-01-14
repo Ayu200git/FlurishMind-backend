@@ -223,7 +223,9 @@ module.exports = {
     const user = await User.findById(userId)
       .select('-password')
       .populate({ path: 'savedPosts', populate: { path: 'creator', select: 'name email status role avatar' } })
-      .populate({ path: 'posts', populate: { path: 'creator', select: 'name email status role avatar' } });
+      .populate({ path: 'posts', populate: { path: 'creator', select: 'name email status role avatar' } })
+      .populate('followers', 'name email status role avatar username bio')
+      .populate('following', 'name email status role avatar username bio');
 
     if (!user) throw new Error('User not found!');
 
@@ -235,7 +237,12 @@ module.exports = {
       savedPosts: user.savedPosts ? await Promise.all(
         user.savedPosts.filter(p => p && p._id).map(p => mapPostData(p))
       ) : [],
-      posts: await Promise.all(posts.map(p => mapPostData(p)))
+      posts: await Promise.all(posts.map(p => mapPostData(p))),
+      followers: user.followers ? user.followers.map(u => mapUserData(u)) : [],
+      following: user.following ? user.following.map(u => mapUserData(u)) : [],
+      followersCount: user.followers ? user.followers.length : 0,
+      followingCount: user.following ? user.following.length : 0,
+      postsCount: posts.length
     };
   },
 
@@ -619,6 +626,118 @@ module.exports = {
       ...mapUserData(user),
       savedPosts: await Promise.all(validSavedPosts.map(p => mapPostData(p))),
       posts: await Promise.all(posts.map(p => mapPostData(p)))
+    };
+  },
+
+  // ========== NEW SOCIAL FEATURES ==========
+
+  userByUsername: async function ({ username }, context) {
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    const user = await User.findOne({ username }).populate('savedPosts').populate('followers', 'name email status role avatar').populate('following', 'name email status role avatar');
+    if (!user) throw new Error('User not found!');
+
+    const posts = await Post.find({ creator: user._id }).populate('creator', 'name email status role avatar').populate('likes', 'name email status role avatar').sort({ createdAt: -1 });
+
+    return {
+      ...mapUserData(user),
+      savedPosts: await Promise.all((user.savedPosts || []).filter(p => p && p._id).map(p => mapPostData(p))),
+      posts: await Promise.all(posts.map(p => mapPostData(p))),
+      followers: user.followers ? user.followers.map(u => mapUserData(u)) : [],
+      following: user.following ? user.following.map(u => mapUserData(u)) : [],
+      followersCount: user.followers ? user.followers.length : 0,
+      followingCount: user.following ? user.following.length : 0,
+      postsCount: posts.length
+    };
+  },
+
+  followers: async function ({ userId }, context) {
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    const user = await User.findById(userId).populate('followers', 'name email status role avatar username bio');
+    if (!user) throw new Error('User not found!');
+    return user.followers ? user.followers.map(u => mapUserData(u)) : [];
+  },
+
+  following: async function ({ userId }, context) {
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    const user = await User.findById(userId).populate('following', 'name email status role avatar username bio');
+    if (!user) throw new Error('User not found!');
+    return user.following ? user.following.map(u => mapUserData(u)) : [];
+  },
+
+  followUser: async function ({ userId }, context) {
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    if (context.userId === userId) throw new Error('You cannot follow yourself!');
+
+    const currentUser = await User.findById(context.userId);
+    const targetUser = await User.findById(userId);
+
+    if (!currentUser || !targetUser) throw new Error('User not found!');
+
+    // Check if already following
+    if (currentUser.following.includes(userId)) {
+      throw new Error('Already following this user!');
+    }
+
+    // Add to current user's following
+    currentUser.following.push(userId);
+    await currentUser.save();
+
+    // Add to target user's followers
+    targetUser.followers.push(context.userId);
+    await targetUser.save();
+
+    // Return updated current user with populated data
+    await currentUser.populate('followers', 'name email status role avatar username bio');
+    await currentUser.populate('following', 'name email status role avatar username bio');
+    await currentUser.populate('savedPosts');
+
+    const posts = await Post.find({ creator: context.userId }).populate('creator', 'name email status role avatar').populate('likes', 'name email status role avatar').sort({ createdAt: -1 });
+
+    return {
+      ...mapUserData(currentUser),
+      savedPosts: await Promise.all((currentUser.savedPosts || []).filter(p => p && p._id).map(p => mapPostData(p))),
+      posts: await Promise.all(posts.map(p => mapPostData(p))),
+      followers: currentUser.followers ? currentUser.followers.map(u => mapUserData(u)) : [],
+      following: currentUser.following ? currentUser.following.map(u => mapUserData(u)) : [],
+      followersCount: currentUser.followers ? currentUser.followers.length : 0,
+      followingCount: currentUser.following ? currentUser.following.length : 0,
+      postsCount: posts.length
+    };
+  },
+
+  unfollowUser: async function ({ userId }, context) {
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    if (context.userId === userId) throw new Error('You cannot unfollow yourself!');
+
+    const currentUser = await User.findById(context.userId);
+    const targetUser = await User.findById(userId);
+
+    if (!currentUser || !targetUser) throw new Error('User not found!');
+
+    // Remove from current user's following
+    currentUser.following.pull(userId);
+    await currentUser.save();
+
+    // Remove from target user's followers
+    targetUser.followers.pull(context.userId);
+    await targetUser.save();
+
+    // Return updated current user with populated data
+    await currentUser.populate('followers', 'name email status role avatar username bio');
+    await currentUser.populate('following', 'name email status role avatar username bio');
+    await currentUser.populate('savedPosts');
+
+    const posts = await Post.find({ creator: context.userId }).populate('creator', 'name email status role avatar').populate('likes', 'name email status role avatar').sort({ createdAt: -1 });
+
+    return {
+      ...mapUserData(currentUser),
+      savedPosts: await Promise.all((currentUser.savedPosts || []).filter(p => p && p._id).map(p => mapPostData(p))),
+      posts: await Promise.all(posts.map(p => mapPostData(p))),
+      followers: currentUser.followers ? currentUser.followers.map(u => mapUserData(u)) : [],
+      following: currentUser.following ? currentUser.following.map(u => mapUserData(u)) : [],
+      followersCount: currentUser.followers ? currentUser.followers.length : 0,
+      followingCount: currentUser.following ? currentUser.following.length : 0,
+      postsCount: posts.length
     };
   }
 };
