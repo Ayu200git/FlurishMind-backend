@@ -37,22 +37,18 @@ app.use(bodyParser.json());
 app.use(multer({ storage: fileStorage, fileFilter }).single('image'));
 app.use('/images', express.static(path.join(__dirname, 'images')));
 
+// CORS configuration with proper headers for images
 app.use((req, res, next) => {
-  // SAFETY: Fallback if env var is missing to prevent crash
-  const allowedOrigin = process.env.FRONTEND_URL || '*';
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'OPTIONS, GET, POST, PUT, PATCH, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  res.setHeader(
-    'Access-Control-Allow-Origin',
-    allowedOrigin
-  );
-  res.setHeader(
-    'Access-Control-Allow-Methods',
-    'OPTIONS, GET, POST, PUT, PATCH, DELETE'
-  );
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization'
-  );
+  // Add CORS headers for image requests
+  if (req.path.startsWith('/images/')) {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -102,9 +98,7 @@ app.use((error, req, res, next) => {
 if (!Mongo_URI) {
   console.error('FATAL ERROR: MONGO_URI is not defined in environment variables.');
 } else {
-  // Mask password for safe logging
-  const maskedUri = Mongo_URI.replace(/:([^@]+)@/, ':****@');
-  console.log('Connecting to MongoDB:', maskedUri);
+  console.log('Connecting to MongoDB...');
 }
 
 mongoose
