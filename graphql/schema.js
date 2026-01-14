@@ -60,6 +60,11 @@ module.exports = buildSchema(`
         avatar: String
         posts: [Post!]!
         savedPosts: [Post!]!
+        followers: [User!]!
+        following: [User!]!
+        followersCount: Int!
+        followingCount: Int!
+        postsCount: Int!
     }
 
     type AuthData {
@@ -105,6 +110,9 @@ module.exports = buildSchema(`
         user: User!
         users: [User!]!
         userById(userId: ID!): User!
+        userByUsername(username: String!): User!
+        followers(userId: ID!): [User!]!
+        following(userId: ID!): [User!]!
         comments(postId: ID!, page: Int, limit: Int): PaginatedComments!
         replies(commentId: ID!): [Comment!]!
         paginatedComments(postId: ID!, page: Int, limit: Int): PaginatedComments!
@@ -130,6 +138,8 @@ module.exports = buildSchema(`
         unlikeComment(commentId: ID!): Comment!
         savePost(postId: ID!): User!
         unsavePost(postId: ID!): User!
+        followUser(userId: ID!): User!
+        unfollowUser(userId: ID!): User!
     }
 
     schema {
