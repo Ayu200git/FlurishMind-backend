@@ -13,13 +13,6 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-console.log('--- STARTING SERVER ---');
-console.log('NODE_ENV:', process.env.NODE_ENV);
-console.log('Checking Environment Variables:');
-console.log('MONGO_URI Present:', !!process.env.MONGO_URI);
-console.log('FRONTEND_URL Present:', !!process.env.FRONTEND_URL);
-console.log('JWT_SECRET Present:', !!process.env.JWT_SECRET);
-
 const graphqlSchema = require('./graphql/schema');
 const graphqlResolver = require('./graphql/resolvers');
 
@@ -27,8 +20,8 @@ const auth = require('./middleware/auth');
 const { clearImage } = require('./util/file');
 
 const app = express();
-
-const Mongo_URI = process.env.MONGO_URI;
+const Mongo_URI = (process.env.MONGO_URI || '').trim();
+const port = process.env.PORT || 8080;
 
 const fileStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'images'),
@@ -110,12 +103,9 @@ if (!Mongo_URI) {
   console.error('FATAL ERROR: MONGO_URI is not defined.');
 }
 
-console.log('Attempting to connect to MongoDB...');
 mongoose
   .connect(Mongo_URI)
   .then(() => {
-    console.log('MongoDB connected successfully.');
-    const port = process.env.PORT || 8080;
     app.listen(port, () => console.log(`Server running on port ${port}`));
   })
   .catch(err => {
