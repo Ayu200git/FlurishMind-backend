@@ -14,41 +14,31 @@ async function getRepliesRecursive(parentId) {
     .populate('likes', 'name _id');
 
   return Promise.all(replies.map(async r => {
-    if (!r.creator) {
-      console.error('Creator not found for reply:', r._id);
-      throw new Error('Comment creator not found');
-    }
+    const rDoc = r._doc || r;
+    // Fallback for orphaned comments
+    const creator = r.creator ? {
+      _id: r.creator._id.toString(),
+      name: r.creator.name || 'Deleted User',
+      email: r.creator.email || '',
+      avatar: r.creator.avatar && r.creator.avatar.includes('via.placeholder.com') ? '' : (r.creator.avatar || '')
+    } : {
+      _id: 'deleted',
+      name: 'Deleted User',
+      email: '',
+      avatar: ''
+    };
+
     return {
-      ...r._doc,
+      ...rDoc,
       _id: r._id.toString(),
-      createdAt: r.createdAt.toISOString(),
-      updatedAt: r.updatedAt ? r.updatedAt.toISOString() : r.createdAt.toISOString(),
-      likesCount: r.likes.length,
-      likes: r.likes.map(u => ({ ...u._doc, _id: u._id.toString() })),
-      creator: {
-        _id: r.creator._id.toString(),
-        name: r.creator.name,
-        email: r.creator.email,
-        avatar: r.creator.avatar || ''
-      },
+      createdAt: r.createdAt ? r.createdAt.toISOString() : new Date().toISOString(),
+      updatedAt: r.updatedAt ? r.updatedAt.toISOString() : (r.createdAt ? r.createdAt.toISOString() : new Date().toISOString()),
+      likesCount: r.likes ? r.likes.length : 0,
+      likes: r.likes ? r.likes.map(u => ({ ...(u._doc || u), _id: u._id.toString() })) : [],
+      creator: creator,
       parentId: r.parentId ? r.parentId.toString() : null,
-      replies: await Promise.all(replies.map(async r => ({
-        ...r._doc,
-        _id: r._id.toString(),
-        createdAt: r.createdAt.toISOString(),
-        creator: {
-          _id: r.creator._id.toString(),
-          name: r.creator.name,
-          email: r.creator.email,
-          avatar: r.creator.avatar
-        },
-        parentId: r.parentId ? r.parentId.toString() : null,
-        likesCount: r.likes ? r.likes.length : 0,
-        likes: [],
-        replies: [],
-        repliesCount: (await Comment.countDocuments({ parentId: r._id }))
-      }))),
-      repliesCount: (await Comment.countDocuments({ parentId: r._id }))
+      replies: await getRepliesRecursive(r._id),
+      repliesCount: await Comment.countDocuments({ parentId: r._id })
     };
   }));
 }
@@ -82,22 +72,34 @@ async function getNestedComments(postId) {
 /* ✅ Helper to map Post objects consistently for return */
 async function mapPostData(p) {
   if (!p) return null;
-  // Ensure we have a doc
   const doc = p._doc || p;
   const commentsCount = await Comment.countDocuments({ post: p._id, parentId: null });
 
-  // Sanitization: Strip placeholder URLs to prevent DNS errors
-  let imageUrl = p.imageUrl;
-  if (imageUrl && imageUrl.includes('via.placeholder.com')) {
+  let imageUrl = p.imageUrl || '';
+  if (imageUrl.includes('via.placeholder.com')) {
     imageUrl = '';
   }
+
+  // Fallback for missing creator
+  const creator = p.creator && typeof p.creator === 'object' ? {
+    ...(p.creator._doc || p.creator),
+    _id: p.creator._id ? p.creator._id.toString() : p.creator.toString(),
+    avatar: p.creator.avatar && p.creator.avatar.includes('via.placeholder.com') ? '' : (p.creator.avatar || '')
+  } : {
+    _id: p.creator ? p.creator.toString() : 'deleted',
+    name: 'Deleted User',
+    status: 'Inactive',
+    role: 'USER',
+    avatar: '',
+    email: 'deleted@user.com'
+  };
 
   return {
     ...doc,
     _id: p._id.toString(),
     imageUrl: imageUrl,
-    title: p.title,
-    content: p.content,
+    title: p.title || 'Untitled Post',
+    content: p.content || '',
     createdAt: p.createdAt ? p.createdAt.toISOString() : new Date().toISOString(),
     updatedAt: p.updatedAt ? p.updatedAt.toISOString() : (p.createdAt ? p.createdAt.toISOString() : new Date().toISOString()),
     likes: p.likes ? p.likes.map(u => {
@@ -109,12 +111,44 @@ async function mapPostData(p) {
     }) : [],
     likesCount: p.likes ? p.likes.length : 0,
     commentsCount: commentsCount,
-    comments: [], // Default to empty, post resolver can override if needed
-    creator: p.creator ? {
-      ...(p.creator._doc || p.creator),
-      _id: p.creator._id ? p.creator._id.toString() : p.creator.toString(),
-      avatar: p.creator.avatar && p.creator.avatar.includes('via.placeholder.com') ? '' : (p.creator.avatar || '')
-    } : null
+    comments: [],
+    creator: creator
+  };
+}
+
+/* ✅ Helper to map Comment objects consistently */
+async function mapCommentData(c) {
+  if (!c) return null;
+  const doc = c._doc || c;
+
+  // Fallback for missing creator
+  const creator = c.creator && typeof c.creator === 'object' ? {
+    ...(c.creator._doc || c.creator),
+    _id: c.creator._id ? c.creator._id.toString() : c.creator.toString(),
+    avatar: c.creator.avatar && c.creator.avatar.includes('via.placeholder.com') ? '' : (c.creator.avatar || '')
+  } : {
+    _id: c.creator ? c.creator.toString() : 'deleted',
+    name: 'Deleted User',
+    email: '',
+    avatar: ''
+  };
+
+  return {
+    ...doc,
+    _id: c._id.toString(),
+    createdAt: c.createdAt ? c.createdAt.toISOString() : new Date().toISOString(),
+    updatedAt: c.updatedAt ? c.updatedAt.toISOString() : (c.createdAt ? c.createdAt.toISOString() : new Date().toISOString()),
+    likesCount: c.likes ? c.likes.length : 0,
+    likes: c.likes ? c.likes.map(u => {
+      const uDoc = u._doc || u;
+      return {
+        ...uDoc,
+        _id: u._id ? u._id.toString() : u.toString()
+      };
+    }) : [],
+    creator: creator,
+    replies: [], // Recursion handled elsewhere if needed
+    repliesCount: await Comment.countDocuments({ parentId: c._id })
   };
 }
 
@@ -392,16 +426,7 @@ module.exports = {
     await comment.populate('likes', 'name _id');
     await comment.populate('creator', 'name _id avatar email');
 
-    return {
-      ...comment._doc,
-      _id: comment._id.toString(),
-      createdAt: comment.createdAt.toISOString(),
-      updatedAt: comment.updatedAt.toISOString(),
-      likesCount: comment.likes.length,
-      likes: comment.likes.map(u => ({ ...u._doc, _id: u._id.toString() })),
-      creator: { ...comment.creator._doc, _id: comment.creator._id.toString() },
-      replies: [] // Resolvers don't usually return deep nested recursive data unless asked, but schema demands [Comment!]!. Empty is fine for just "like".
-    };
+    return mapCommentData(comment);
   },
 
   unlikeComment: async function ({ commentId }, context) {
@@ -415,16 +440,7 @@ module.exports = {
     await comment.populate('likes', 'name _id');
     await comment.populate('creator', 'name _id avatar email');
 
-    return {
-      ...comment._doc,
-      _id: comment._id.toString(),
-      createdAt: comment.createdAt.toISOString(),
-      updatedAt: comment.updatedAt.toISOString(),
-      likesCount: comment.likes.length,
-      likes: comment.likes.map(u => ({ ...u._doc, _id: u._id.toString() })),
-      creator: { ...comment.creator._doc, _id: comment.creator._id.toString() },
-      replies: []
-    };
+    return mapCommentData(comment);
   },
 
   addReply: async function ({ postId, commentId, content }, context) {
@@ -447,49 +463,12 @@ module.exports = {
     });
 
     await reply.save();
-    await reply.populate('creator', 'name username email avatar');
+    await reply.populate('creator', 'name _id avatar email');
 
-    return {
-      ...reply._doc,
-      _id: reply._id.toString(),
-      creator: { ...reply.creator._doc, _id: reply.creator._id.toString() },
-      likes: [],
-      likesCount: 0,
-      replies: [],
-      repliesCount: 0,
-      createdAt: reply.createdAt.toISOString(),
-      updatedAt: reply.updatedAt.toISOString()
-    };
+    return mapCommentData(reply);
   },
 
-  paginatedReplies: async function ({ commentId, page = 1, limit = 5 }, context) {
-    if (!context?.isAuth) throw new Error('Not authenticated!');
 
-    const perPage = limit;
-    const totalReplies = await Comment.countDocuments({ parentId: commentId });
-    const replies = await Comment.find({ parentId: commentId })
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * perPage)
-      .limit(perPage)
-      .populate('creator', 'name avatar _id')
-      .populate('likes', 'name _id');
-
-    return {
-      replies: replies.map(r => ({
-        ...r._doc,
-        _id: r._id.toString(),
-        createdAt: r.createdAt.toISOString(),
-        updatedAt: r.updatedAt.toISOString(),
-        likes: r.likes.map(l => ({ ...l._doc, _id: l._id.toString() })),
-        likesCount: r.likes.length,
-        creator: { ...r.creator._doc, _id: r.creator._id.toString() },
-        replies: [], // Do we need recursively nested replies? Maybe just count? Schema says [Comment!]! so empty array satisfies strictly.
-        repliesCount: 0 // We could fetch count if we want recursive depth > 1
-      })),
-      totalReplies,
-      hasMore: (page * perPage) < totalReplies
-    };
-  },
 
   addComment: async function ({ commentInput }, context) {
 
@@ -516,30 +495,7 @@ module.exports = {
       select: "name username email avatar role status"
     });
 
-    if (!comment.creator || !comment.creator.name) {
-      comment.creator = comment.creator || {};
-      comment.creator.name = "Unknown User";
-    }
-
-    return {
-      ...comment._doc,
-      _id: comment._id.toString(),
-      creator: {
-        _id: comment.creator._id?.toString() || null,
-        name: comment.creator.name,
-        username: comment.creator.username || "",
-        email: comment.creator.email || "",
-        avatar: comment.creator.avatar || "",
-        role: comment.creator.role || "user",
-        status: comment.creator.status || ""
-      },
-      likes: [],
-      likesCount: 0,
-      replies: [],
-      repliesCount: 0,
-      createdAt: comment.createdAt.toISOString(),
-      updatedAt: comment.updatedAt.toISOString()
-    };
+    return mapCommentData(comment);
   },
 
 
@@ -555,45 +511,9 @@ module.exports = {
     comment.content = content.trim();
     await comment.save();
     await comment.populate('likes');
+    await comment.populate('creator', 'name _id email avatar');
 
-    return {
-      ...comment._doc,
-      _id: comment._id.toString(),
-      content: comment.content,
-      createdAt: comment.createdAt.toISOString(),
-      updatedAt: (comment.updatedAt || comment.createdAt).toISOString(),
-      creator: {
-        _id: comment.creator._id.toString(),
-        name: comment.creator.name,
-        email: comment.creator.email,
-        avatar: comment.creator.avatar || ''
-      },
-      parentId: comment.parentId ? comment.parentId.toString() : null,
-      likes: (comment.likes || []).map(l => {
-        if (l && l._id) {
-          // Fully populated user object
-          return {
-            ...l._doc,
-            _id: l._id.toString(),
-            name: l.name || 'Unknown',
-            email: l.email || '',
-            status: l.status || 'active',
-            role: l.role || 'user'
-          };
-        }
-        // Fallback for unpopulated ID or partial object
-        return {
-          _id: l ? l.toString() : 'unknown',
-          name: 'Unknown',
-          email: '',
-          status: 'active',
-          role: 'user'
-        };
-      }),
-      likesCount: comment.likes ? comment.likes.length : 0,
-      replies: (comment.replies || []).map(r => ({ _id: r._id ? r._id.toString() : r.toString() })),
-      repliesCount: comment.replies ? comment.replies.length : 0
-    };
+    return mapCommentData(comment);
   },
 
   deleteComment: async function ({ commentId }, context) {
@@ -647,23 +567,11 @@ module.exports = {
       .populate('creator', 'name email avatar')
       .populate('likes', 'name _id');
 
-    const comments = await Promise.all(topComments.map(async c => ({
-      ...c._doc,
-      _id: c._id.toString(),
-      createdAt: c.createdAt.toISOString(),
-      updatedAt: c.updatedAt ? c.updatedAt.toISOString() : c.createdAt.toISOString(),
-      likesCount: c.likes.length,
-      likes: c.likes.map(u => ({ ...u._doc, _id: u._id.toString() })),
-      creator: {
-        _id: c.creator._id.toString(),
-        name: c.creator.name,
-        email: c.creator.email,
-        avatar: c.creator.avatar
-      },
-      parentId: null,
-      replies: await getRepliesRecursive(c._id),
-      repliesCount: (await Comment.countDocuments({ parentId: c._id }))
-    })));
+    const comments = await Promise.all(topComments.map(async c => {
+      const mappedComment = await mapCommentData(c);
+      mappedComment.replies = await getRepliesRecursive(c._id);
+      return mappedComment;
+    }));
 
     return {
       comments,
@@ -677,30 +585,17 @@ module.exports = {
     const skip = (page - 1) * limit;
 
     const totalReplies = await Comment.countDocuments({ parentId: commentId });
-    const replies = await Comment.find({ parentId: commentId })
+    const repliesData = await Comment.find({ parentId: commentId })
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .populate('creator', 'name email avatar')
       .populate('likes', 'name _id');
 
+    const replies = await Promise.all(repliesData.map(r => mapCommentData(r)));
+
     return {
-      replies: await Promise.all(replies.map(async r => ({
-        ...r._doc,
-        _id: r._id.toString(),
-        createdAt: r.createdAt.toISOString(),
-        creator: {
-          _id: r.creator._id.toString(),
-          name: r.creator.name,
-          email: r.creator.email,
-          avatar: r.creator.avatar
-        },
-        parentId: r.parentId ? r.parentId.toString() : null,
-        likesCount: r.likes ? r.likes.length : 0,
-        likes: [],
-        replies: [],
-        repliesCount: (await Comment.countDocuments({ parentId: r._id }))
-      }))),
+      replies,
       totalReplies,
       hasMore: skip + limit < totalReplies
     };
