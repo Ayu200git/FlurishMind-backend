@@ -281,7 +281,7 @@ module.exports = {
     const post = new Post({
       title: postInput.title,
       content: postInput.content,
-      imageUrl: postInput.imageUrl,
+      imageUrl: postInput.imageUrl || '',
       creator: user
     });
 
