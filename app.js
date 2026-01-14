@@ -65,13 +65,8 @@ app.use((req, res, next) => {
   }
   next();
 });
- 
-app.use('/graphql', (req, res, next)=>{
-  if (req.body && req.body.query) {
-    console.log('Incoming GraphQL Query:', JSON.stringify(req.body.query).substring(0, 200)); // Truncate for sanity
-  }
-  next();
-});
+
+
 
 
 app.put('/post-image', auth, (req, res, next) => {

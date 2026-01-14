@@ -60,10 +60,6 @@ async function getNestedComments(postId) {
     .populate('likes', 'name _id');
 
   return Promise.all(topComments.map(async c => {
-    if (!c.creator) {
-      console.error('Creator not found for comment:', c._id);
-      throw new Error('Comment creator not found');
-    }
     return {
       ...c._doc,
       _id: c._id.toString(),
@@ -77,11 +73,49 @@ async function getNestedComments(postId) {
         email: c.creator.email,
         avatar: c.creator.avatar || ''
       },
-      parentId: null,
       replies: await getRepliesRecursive(c._id),
       repliesCount: (await Comment.countDocuments({ parentId: c._id }))
     };
   }));
+}
+
+/* ✅ Helper to map Post objects consistently for return */
+async function mapPostData(p) {
+  if (!p) return null;
+  // Ensure we have a doc
+  const doc = p._doc || p;
+  const commentsCount = await Comment.countDocuments({ post: p._id, parentId: null });
+
+  // Sanitization: Strip placeholder URLs to prevent DNS errors
+  let imageUrl = p.imageUrl;
+  if (imageUrl && imageUrl.includes('via.placeholder.com')) {
+    imageUrl = '';
+  }
+
+  return {
+    ...doc,
+    _id: p._id.toString(),
+    imageUrl: imageUrl,
+    title: p.title,
+    content: p.content,
+    createdAt: p.createdAt ? p.createdAt.toISOString() : new Date().toISOString(),
+    updatedAt: p.updatedAt ? p.updatedAt.toISOString() : (p.createdAt ? p.createdAt.toISOString() : new Date().toISOString()),
+    likes: p.likes ? p.likes.map(u => {
+      const uDoc = u._doc || u;
+      return {
+        ...uDoc,
+        _id: u._id ? u._id.toString() : u.toString()
+      };
+    }) : [],
+    likesCount: p.likes ? p.likes.length : 0,
+    commentsCount: commentsCount,
+    comments: [], // Default to empty, post resolver can override if needed
+    creator: p.creator ? {
+      ...(p.creator._doc || p.creator),
+      _id: p.creator._id ? p.creator._id.toString() : p.creator.toString(),
+      avatar: p.creator.avatar && p.creator.avatar.includes('via.placeholder.com') ? '' : (p.creator.avatar || '')
+    } : null
+  };
 }
 
 module.exports = {
@@ -143,9 +177,27 @@ module.exports = {
 
   user: async function (_, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
-    const user = await User.findById(context.userId);
+    const user = await User.findById(context.userId).populate('savedPosts').populate('posts');
     if (!user) throw new Error('No user found!');
-    return { ...user._doc, _id: user._id.toString() };
+
+    // We need to ensure nested fields like creator on posts are populated if the Schema demands it.
+    // The Schema `Post` has `creator: User!`. Mongoose `.populate('posts')` only gives us the Post documents.
+    // The `post.creator` field inside those might be an ID. 
+    // We can use deep population: .populate({ path: 'posts', populate: { path: 'creator' } })
+
+    await user.populate({ path: 'savedPosts', populate: { path: 'creator' } });
+
+    // Fetch posts directly for robustness
+    const posts = await Post.find({ creator: context.userId }).populate('creator').populate('likes').sort({ createdAt: -1 });
+
+    return {
+      ...user._doc,
+      _id: user._id.toString(),
+      savedPosts: user.savedPosts ? await Promise.all(
+        user.savedPosts.filter(p => p && p._id).map(p => mapPostData(p))
+      ) : [],
+      posts: await Promise.all(posts.map(p => mapPostData(p)))
+    };
   },
 
   updateStatus: async function ({ status }, context) {
@@ -182,9 +234,24 @@ module.exports = {
 
   userById: async function ({ userId }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
-    const user = await User.findById(userId).select('-password');
+    const user = await User.findById(userId)
+      .select('-password')
+      .populate({ path: 'savedPosts', populate: { path: 'creator' } })
+      .populate({ path: 'posts', populate: { path: 'creator' } });
+
     if (!user) throw new Error('User not found!');
-    return { ...user._doc, _id: user._id.toString() };
+
+    // Fetch posts directly to ensure we get all posts by this creator (more robust than user.posts array)
+    const posts = await Post.find({ creator: userId }).populate('creator').populate('likes').sort({ createdAt: -1 });
+
+    return {
+      ...user._doc,
+      _id: user._id.toString(),
+      savedPosts: user.savedPosts ? await Promise.all(
+        user.savedPosts.filter(p => p && p._id).map(p => mapPostData(p))
+      ) : [],
+      posts: await Promise.all(posts.map(p => mapPostData(p)))
+    };
   },
 
   createPost: async function ({ postInput }, context) {
@@ -215,32 +282,20 @@ module.exports = {
       await user.save();
     }
 
-    return {
-      ...createdPost._doc,
-      _id: createdPost._id.toString(),
-      createdAt: createdPost.createdAt.toISOString(),
-      updatedAt: createdPost.updatedAt.toISOString(),
-      likesCount: 0,
-      commentsCount: 0,
-      comments: []
-    };
+    // Populate for return
+    await createdPost.populate('creator');
+    return await mapPostData(createdPost);
   },
 
   updatePost: async function ({ id, postInput }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
-    const post = await Post.findById(id).populate('creator');
+    const post = await Post.findById(id).populate('creator').populate('likes');
     if (!post) throw new Error('No post found!');
 
-    // Safety check for orphaned posts
-    if (!post.creator) {
-      // If creator is missing but the current user matches the stored ID (without populate), we could check that?
-      // But safer to just fail or assume admin? Let's just fail safely.
-      throw new Error('Post creator not found (Data integrity error).');
-    }
-
-    if (post.creator._id.toString() !== context.userId.toString()) {
+    if (!post.creator || post.creator._id.toString() !== context.userId.toString()) {
       throw new Error('Not authorized!');
     }
+
     const errors = [];
     if (!postInput.title || !validator.isLength(postInput.title, { min: 5 })) errors.push({ message: 'Title is invalid.' });
     if (!postInput.content || !validator.isLength(postInput.content, { min: 5 })) errors.push({ message: 'Content is invalid.' });
@@ -250,11 +305,11 @@ module.exports = {
       err.code = 422;
       throw err;
     }
+
     post.title = postInput.title;
     post.content = postInput.content;
 
     if (postInput.imageUrl !== 'undefined' && postInput.imageUrl !== post.imageUrl) {
-      // Only clear local files, not remote URLs (case insensitive check)
       if (post.imageUrl && !/^https?:\/\//i.test(post.imageUrl)) {
         try {
           clearImage(post.imageUrl);
@@ -262,16 +317,9 @@ module.exports = {
       }
       post.imageUrl = postInput.imageUrl;
     }
+
     const updatedPost = await post.save();
-    return {
-      ...updatedPost._doc,
-      _id: updatedPost._id.toString(),
-      createdAt: updatedPost.createdAt.toISOString(),
-      updatedAt: updatedPost.updatedAt.toISOString(),
-      likesCount: updatedPost.likes ? updatedPost.likes.length : 0,
-      commentsCount: await Comment.countDocuments({ post: id, parentId: null }),
-      comments: []
-    };
+    return await mapPostData(updatedPost);
   },
 
   deletePost: async function ({ id }, context) {
@@ -288,11 +336,9 @@ module.exports = {
       } catch (e) { console.error("Error clearing image:", e); }
     }
     await Post.findByIdAndDelete(id);
-    console.log('Post deleted from DB'); // DEBUG LOG
     const user = await User.findById(context.userId);
     user.posts.pull(id);
     await user.save();
-    console.log('User post reference removed'); // DEBUG LOG
     return true;
   },
 
@@ -305,27 +351,13 @@ module.exports = {
       .sort({ createdAt: -1 })
       .skip((page - 1) * perPage)
       .limit(perPage)
-      .populate('creator', 'name _id')
+      .populate('creator', 'name _id avatar')
       .populate('likes', 'name _id');
 
-    const postsWithComments = await Promise.all(
-      posts.map(async (p) => {
-        // We only fetch the count here.
-        const count = await Comment.countDocuments({ post: p._id, parentId: null });
-        return { post: p, comments: [], commentsCount: count };
-      })
-    );
+    const mappedPosts = await Promise.all(posts.map(p => mapPostData(p)));
 
     return {
-      posts: postsWithComments.map(({ post, comments, commentsCount }) => ({
-        ...post._doc,
-        _id: post._id.toString(),
-        createdAt: post.createdAt.toISOString(),
-        updatedAt: post.updatedAt.toISOString(),
-        likesCount: post.likes ? post.likes.length : 0,
-        commentsCount: commentsCount,
-        comments
-      })),
+      posts: mappedPosts,
       totalPosts
     };
   },
@@ -333,21 +365,16 @@ module.exports = {
   post: async function ({ id }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
     const post = await Post.findById(id)
-      .populate('creator', 'name _id')
+      .populate('creator', 'name _id avatar')
       .populate('likes', 'name _id');
     if (!post) throw new Error('No post found!');
 
-    const comments = await getNestedComments(id);
+    const mappedPost = await mapPostData(post);
+    // Overwrite comments with nested version for single post view
+    mappedPost.comments = await getNestedComments(id);
+    mappedPost.commentsCount = mappedPost.comments.length;
 
-    return {
-      ...post._doc,
-      _id: post._id.toString(),
-      createdAt: post.createdAt.toISOString(),
-      updatedAt: post.updatedAt.toISOString(),
-      likesCount: post.likes ? post.likes.length : 0,
-      commentsCount: comments.length,
-      comments
-    };
+    return mappedPost;
   },
 
   likeComment: async function ({ commentId }, context) {
@@ -681,45 +708,86 @@ module.exports = {
 
   likePost: async function ({ postId }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
-    const post = await Post.findById(postId).populate('creator', 'name _id');
+    // Populate likes so we can map them correctly
+    const post = await Post.findById(postId).populate('creator', 'name _id').populate('likes');
     if (!post) throw new Error('Post not found!');
 
     const userId = context.userId.toString();
-    if (!(post.likes || []).some(l => l.toString() === userId)) {
+    if (!(post.likes || []).some(l => (l._id ? l._id.toString() : l.toString()) === userId)) {
       post.likes.push(userId);
       await post.save();
+      // Re-populate after save to be safe
+      await post.populate('likes');
     }
 
-    const comments = await getNestedComments(postId);
-    return {
-      ...post._doc,
-      _id: post._id.toString(),
-      createdAt: post.createdAt.toISOString(),
-      updatedAt: post.updatedAt.toISOString(),
-      likesCount: post.likes.length,
-      commentsCount: comments.length,
-      comments
-    };
+    return await mapPostData(post);
   },
 
   unlikePost: async function ({ postId }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
-    const post = await Post.findById(postId).populate('creator', 'name _id');
+    const post = await Post.findById(postId).populate('creator', 'name _id').populate('likes');
     if (!post) throw new Error('Post not found!');
 
     const userId = context.userId.toString();
-    post.likes = (post.likes || []).filter(like => like.toString() !== userId);
+    post.likes = (post.likes || []).filter(like => (like._id ? like._id.toString() : like.toString()) !== userId);
     await post.save();
 
-    const comments = await getNestedComments(postId);
+    return await mapPostData(post);
+  },
+
+  savePost: async function ({ postId }, context) {
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    const user = await User.findById(context.userId);
+    if (!user) throw new Error('User not found!');
+
+    // Check if post exists
+    const post = await Post.findById(postId);
+    if (!post) throw new Error('Post not found!');
+
+    if (!user.savedPosts.includes(postId)) {
+      user.savedPosts.push(postId);
+      await user.save();
+    }
+
+    // Populate for return
+    await user.populate({ path: 'savedPosts', populate: { path: 'creator' } });
+    await user.populate({ path: 'savedPosts', populate: { path: 'likes' } });
+
+    // Check own posts
+    const posts = await Post.find({ creator: context.userId }).populate('creator').populate('likes').sort({ createdAt: -1 });
+
+    const validSavedPosts = user.savedPosts.filter(p => p && p._id);
+
     return {
-      ...post._doc,
-      _id: post._id.toString(),
-      createdAt: post.createdAt.toISOString(),
-      updatedAt: post.updatedAt.toISOString(),
-      likesCount: post.likes.length,
-      commentsCount: comments.length,
-      comments
+      ...user._doc,
+      _id: user._id.toString(),
+      savedPosts: await Promise.all(validSavedPosts.map(p => mapPostData(p))),
+      posts: await Promise.all(posts.map(p => mapPostData(p)))
+    };
+  },
+
+  unsavePost: async function ({ postId }, context) {
+    if (!context?.isAuth) throw new Error('Not authenticated!');
+    const user = await User.findById(context.userId).populate('savedPosts');
+    if (!user) throw new Error('User not found!');
+
+    user.savedPosts.pull(postId);
+    await user.save();
+
+    // Populate for return consistency
+    await user.populate({ path: 'savedPosts', populate: { path: 'creator' } });
+    await user.populate({ path: 'savedPosts', populate: { path: 'likes' } });
+
+    // Fetch own posts as well to return a full User object similar to user/userById
+    const posts = await Post.find({ creator: context.userId }).populate('creator').populate('likes').sort({ createdAt: -1 });
+
+    const validSavedPosts = user.savedPosts.filter(p => p && p._id);
+
+    return {
+      ...user._doc,
+      _id: user._id.toString(),
+      savedPosts: await Promise.all(validSavedPosts.map(p => mapPostData(p))),
+      posts: await Promise.all(posts.map(p => mapPostData(p)))
     };
   }
 };

@@ -59,6 +59,7 @@ module.exports = buildSchema(`
         role: String!
         avatar: String
         posts: [Post!]!
+        savedPosts: [Post!]!
     }
 
     type AuthData {
@@ -127,6 +128,8 @@ module.exports = buildSchema(`
         addReply(postId: ID!, commentId: ID!, content: String!): Comment!
         likeComment(commentId: ID!): Comment!
         unlikeComment(commentId: ID!): Comment!
+        savePost(postId: ID!): User!
+        unsavePost(postId: ID!): User!
     }
 
     schema {
