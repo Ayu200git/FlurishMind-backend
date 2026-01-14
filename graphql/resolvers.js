@@ -15,27 +15,14 @@ async function getRepliesRecursive(parentId) {
 
   return Promise.all(replies.map(async r => {
     const rDoc = r._doc || r;
-    // Fallback for orphaned comments
-    const creator = r.creator ? {
-      _id: r.creator._id.toString(),
-      name: r.creator.name || 'Deleted User',
-      email: r.creator.email || '',
-      avatar: r.creator.avatar && r.creator.avatar.includes('via.placeholder.com') ? '' : (r.creator.avatar || '')
-    } : {
-      _id: 'deleted',
-      name: 'Deleted User',
-      email: '',
-      avatar: ''
-    };
-
     return {
       ...rDoc,
       _id: r._id.toString(),
       createdAt: r.createdAt ? r.createdAt.toISOString() : new Date().toISOString(),
       updatedAt: r.updatedAt ? r.updatedAt.toISOString() : (r.createdAt ? r.createdAt.toISOString() : new Date().toISOString()),
       likesCount: r.likes ? r.likes.length : 0,
-      likes: r.likes ? r.likes.map(u => ({ ...(u._doc || u), _id: u._id.toString() })) : [],
-      creator: creator,
+      likes: r.likes ? r.likes.map(u => mapUserData(u)) : [],
+      creator: mapUserData(r.creator),
       parentId: r.parentId ? r.parentId.toString() : null,
       replies: await getRepliesRecursive(r._id),
       repliesCount: await Comment.countDocuments({ parentId: r._id })
@@ -69,6 +56,32 @@ async function getNestedComments(postId) {
   }));
 }
 
+/* ✅ Helper to map User objects consistently */
+function mapUserData(u) {
+  if (!u) {
+    return {
+      _id: 'deleted',
+      name: 'Deleted User',
+      username: 'deleted',
+      email: 'deleted@user.com',
+      status: 'Inactive',
+      role: 'user',
+      avatar: ''
+    };
+  }
+  const uDoc = u._doc || u;
+  return {
+    ...uDoc,
+    _id: u._id ? u._id.toString() : u.toString(),
+    name: u.name || 'Unknown User',
+    username: u.username || '',
+    email: u.email || '',
+    status: u.status || 'Active',
+    role: u.role || 'user',
+    avatar: u.avatar && u.avatar.includes('via.placeholder.com') ? '' : (u.avatar || '')
+  };
+}
+
 /* ✅ Helper to map Post objects consistently for return */
 async function mapPostData(p) {
   if (!p) return null;
@@ -80,20 +93,6 @@ async function mapPostData(p) {
     imageUrl = '';
   }
 
-  // Fallback for missing creator
-  const creator = p.creator && typeof p.creator === 'object' ? {
-    ...(p.creator._doc || p.creator),
-    _id: p.creator._id ? p.creator._id.toString() : p.creator.toString(),
-    avatar: p.creator.avatar && p.creator.avatar.includes('via.placeholder.com') ? '' : (p.creator.avatar || '')
-  } : {
-    _id: p.creator ? p.creator.toString() : 'deleted',
-    name: 'Deleted User',
-    status: 'Inactive',
-    role: 'USER',
-    avatar: '',
-    email: 'deleted@user.com'
-  };
-
   return {
     ...doc,
     _id: p._id.toString(),
@@ -102,17 +101,11 @@ async function mapPostData(p) {
     content: p.content || '',
     createdAt: p.createdAt ? p.createdAt.toISOString() : new Date().toISOString(),
     updatedAt: p.updatedAt ? p.updatedAt.toISOString() : (p.createdAt ? p.createdAt.toISOString() : new Date().toISOString()),
-    likes: p.likes ? p.likes.map(u => {
-      const uDoc = u._doc || u;
-      return {
-        ...uDoc,
-        _id: u._id ? u._id.toString() : u.toString()
-      };
-    }) : [],
+    likes: p.likes ? p.likes.map(u => mapUserData(u)) : [],
     likesCount: p.likes ? p.likes.length : 0,
     commentsCount: commentsCount,
     comments: [],
-    creator: creator
+    creator: mapUserData(p.creator)
   };
 }
 
@@ -121,32 +114,14 @@ async function mapCommentData(c) {
   if (!c) return null;
   const doc = c._doc || c;
 
-  // Fallback for missing creator
-  const creator = c.creator && typeof c.creator === 'object' ? {
-    ...(c.creator._doc || c.creator),
-    _id: c.creator._id ? c.creator._id.toString() : c.creator.toString(),
-    avatar: c.creator.avatar && c.creator.avatar.includes('via.placeholder.com') ? '' : (c.creator.avatar || '')
-  } : {
-    _id: c.creator ? c.creator.toString() : 'deleted',
-    name: 'Deleted User',
-    email: '',
-    avatar: ''
-  };
-
   return {
     ...doc,
     _id: c._id.toString(),
     createdAt: c.createdAt ? c.createdAt.toISOString() : new Date().toISOString(),
     updatedAt: c.updatedAt ? c.updatedAt.toISOString() : (c.createdAt ? c.createdAt.toISOString() : new Date().toISOString()),
     likesCount: c.likes ? c.likes.length : 0,
-    likes: c.likes ? c.likes.map(u => {
-      const uDoc = u._doc || u;
-      return {
-        ...uDoc,
-        _id: u._id ? u._id.toString() : u.toString()
-      };
-    }) : [],
-    creator: creator,
+    likes: c.likes ? c.likes.map(u => mapUserData(u)) : [],
+    creator: mapUserData(c.creator),
     replies: [], // Recursion handled elsewhere if needed
     repliesCount: await Comment.countDocuments({ parentId: c._id })
   };
@@ -222,7 +197,7 @@ module.exports = {
     await user.populate({ path: 'savedPosts', populate: { path: 'creator' } });
 
     // Fetch posts directly for robustness
-    const posts = await Post.find({ creator: context.userId }).populate('creator').populate('likes').sort({ createdAt: -1 });
+    const posts = await Post.find({ creator: context.userId }).populate('creator', 'name email status role avatar').populate('likes', 'name email status role avatar').sort({ createdAt: -1 });
 
     return {
       ...user._doc,
@@ -385,8 +360,8 @@ module.exports = {
       .sort({ createdAt: -1 })
       .skip((page - 1) * perPage)
       .limit(perPage)
-      .populate('creator', 'name _id avatar')
-      .populate('likes', 'name _id');
+      .populate('creator', 'name email status role avatar')
+      .populate('likes', 'name email status role avatar');
 
     const mappedPosts = await Promise.all(posts.map(p => mapPostData(p)));
 
@@ -399,8 +374,8 @@ module.exports = {
   post: async function ({ id }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
     const post = await Post.findById(id)
-      .populate('creator', 'name _id avatar')
-      .populate('likes', 'name _id');
+      .populate('creator', 'name email status role avatar')
+      .populate('likes', 'name email status role avatar');
     if (!post) throw new Error('No post found!');
 
     const mappedPost = await mapPostData(post);
@@ -423,8 +398,8 @@ module.exports = {
     }
 
     // Populate to satisfy [User!]! schema
-    await comment.populate('likes', 'name _id');
-    await comment.populate('creator', 'name _id avatar email');
+    await comment.populate('likes', 'name email status role avatar');
+    await comment.populate('creator', 'name email status role avatar');
 
     return mapCommentData(comment);
   },
@@ -437,8 +412,8 @@ module.exports = {
     comment.likes.pull(context.userId);
     await comment.save();
 
-    await comment.populate('likes', 'name _id');
-    await comment.populate('creator', 'name _id avatar email');
+    await comment.populate('likes', 'name email status role avatar');
+    await comment.populate('creator', 'name email status role avatar');
 
     return mapCommentData(comment);
   },
@@ -463,7 +438,8 @@ module.exports = {
     });
 
     await reply.save();
-    await reply.populate('creator', 'name _id avatar email');
+    await reply.populate('creator', 'name email status role avatar');
+
 
     return mapCommentData(reply);
   },
@@ -492,8 +468,9 @@ module.exports = {
     await comment.save();
     await comment.populate({
       path: "creator",
-      select: "name username email avatar role status"
+      select: "name email status role avatar"
     });
+
 
     return mapCommentData(comment);
   },
@@ -510,8 +487,9 @@ module.exports = {
 
     comment.content = content.trim();
     await comment.save();
-    await comment.populate('likes');
-    await comment.populate('creator', 'name _id email avatar');
+    await comment.populate('likes', 'name email status role avatar');
+    await comment.populate('creator', 'name email status role avatar');
+
 
     return mapCommentData(comment);
   },
@@ -564,8 +542,8 @@ module.exports = {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate('creator', 'name email avatar')
-      .populate('likes', 'name _id');
+      .populate('creator', 'name email status role avatar')
+      .populate('likes', 'name email status role avatar');
 
     const comments = await Promise.all(topComments.map(async c => {
       const mappedComment = await mapCommentData(c);
@@ -589,8 +567,8 @@ module.exports = {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate('creator', 'name email avatar')
-      .populate('likes', 'name _id');
+      .populate('creator', 'name email status role avatar')
+      .populate('likes', 'name email status role avatar');
 
     const replies = await Promise.all(repliesData.map(r => mapCommentData(r)));
 
@@ -604,7 +582,7 @@ module.exports = {
   likePost: async function ({ postId }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
     // Populate likes so we can map them correctly
-    const post = await Post.findById(postId).populate('creator', 'name _id').populate('likes');
+    const post = await Post.findById(postId).populate('creator', 'name email status role avatar').populate('likes', 'name email status role avatar');
     if (!post) throw new Error('Post not found!');
 
     const userId = context.userId.toString();
@@ -612,7 +590,7 @@ module.exports = {
       post.likes.push(userId);
       await post.save();
       // Re-populate after save to be safe
-      await post.populate('likes');
+      await post.populate('likes', 'name email status role avatar');
     }
 
     return await mapPostData(post);
@@ -620,7 +598,7 @@ module.exports = {
 
   unlikePost: async function ({ postId }, context) {
     if (!context?.isAuth) throw new Error('Not authenticated!');
-    const post = await Post.findById(postId).populate('creator', 'name _id').populate('likes');
+    const post = await Post.findById(postId).populate('creator', 'name email status role avatar').populate('likes', 'name email status role avatar');
     if (!post) throw new Error('Post not found!');
 
     const userId = context.userId.toString();
@@ -645,11 +623,11 @@ module.exports = {
     }
 
     // Populate for return
-    await user.populate({ path: 'savedPosts', populate: { path: 'creator' } });
-    await user.populate({ path: 'savedPosts', populate: { path: 'likes' } });
+    await user.populate({ path: 'savedPosts', populate: { path: 'creator', select: 'name email status role avatar' } })
+      .populate({ path: 'savedPosts', populate: { path: 'likes', select: 'name email status role avatar' } });
 
     // Check own posts
-    const posts = await Post.find({ creator: context.userId }).populate('creator').populate('likes').sort({ createdAt: -1 });
+    const posts = await Post.find({ creator: context.userId }).populate('creator', 'name email status role avatar').populate('likes', 'name email status role avatar').sort({ createdAt: -1 });
 
     const validSavedPosts = user.savedPosts.filter(p => p && p._id);
 
@@ -670,11 +648,11 @@ module.exports = {
     await user.save();
 
     // Populate for return consistency
-    await user.populate({ path: 'savedPosts', populate: { path: 'creator' } });
-    await user.populate({ path: 'savedPosts', populate: { path: 'likes' } });
+    await user.populate({ path: 'savedPosts', populate: { path: 'creator', select: 'name email status role avatar' } })
+      .populate({ path: 'savedPosts', populate: { path: 'likes', select: 'name email status role avatar' } });
 
     // Fetch own posts as well to return a full User object similar to user/userById
-    const posts = await Post.find({ creator: context.userId }).populate('creator').populate('likes').sort({ createdAt: -1 });
+    const posts = await Post.find({ creator: context.userId }).populate('creator', 'name email status role avatar').populate('likes', 'name email status role avatar').sort({ createdAt: -1 });
 
     const validSavedPosts = user.savedPosts.filter(p => p && p._id);
 
