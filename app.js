@@ -108,10 +108,7 @@ if (!Mongo_URI) {
 }
 
 mongoose
-  .connect(Mongo_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-  })
+  .connect(Mongo_URI)
   .then(() => {
     console.log('Successfully connected to MongoDB.');
     app.listen(port, () => {
