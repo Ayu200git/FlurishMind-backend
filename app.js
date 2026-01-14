@@ -101,6 +101,9 @@ app.use((error, req, res, next) => {
 
 if (!Mongo_URI) {
   console.error('FATAL ERROR: MONGO_URI is not defined.');
+} else {
+  const maskedUri = Mongo_URI.replace(/:([^@]+)@/, ':****@');
+  console.log('Attempting to connect to:', maskedUri);
 }
 
 mongoose
