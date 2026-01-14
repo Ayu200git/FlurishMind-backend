@@ -100,19 +100,29 @@ app.use((error, req, res, next) => {
 });
 
 if (!Mongo_URI) {
-  console.error('FATAL ERROR: MONGO_URI is not defined.');
+  console.error('FATAL ERROR: MONGO_URI is not defined in environment variables.');
 } else {
+  // Mask password for safe logging
   const maskedUri = Mongo_URI.replace(/:([^@]+)@/, ':****@');
-  console.log('Attempting to connect to:', maskedUri);
+  console.log('Connecting to MongoDB:', maskedUri);
 }
 
 mongoose
-  .connect(Mongo_URI)
+  .connect(Mongo_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+  })
   .then(() => {
-    app.listen(port, () => console.log(`Server running on port ${port}`));
+    console.log('Successfully connected to MongoDB.');
+    app.listen(port, () => {
+      console.log(`Server is running! Port: ${port}`);
+    });
   })
   .catch(err => {
-    console.error('FATAL ERROR: MongoDB connection failed:', err);
-    // Keep process alive for a moment to flush logs? No, if we can't connect, we die, but at least we logged it.
+    console.error('SERVER CRASH: MongoDB connection failed!');
+    console.error('Error details:', err.message);
+    if (err.message.includes('authentication failed')) {
+      console.error('TIP: Check your database username, password (encoding), and IP whitelist (0.0.0.0/0).');
+    }
     process.exit(1);
   });
